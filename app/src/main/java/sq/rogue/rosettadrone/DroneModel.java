@@ -990,8 +990,7 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
     private void send_altitude() {
         msg_altitude msg = new msg_altitude();
         LocationCoordinate3D coord = djiAircraft.getFlightController().getState().getAircraftLocation();
-        // TODO adjust multiplicator for altitude
-        msg.altitude_relative = (int) (coord.getAltitude());
+        msg.altitude_relative = (float) (coord.getAltitude());
         m_alt = msg.altitude_relative;
         sendMessage(msg);
     }
