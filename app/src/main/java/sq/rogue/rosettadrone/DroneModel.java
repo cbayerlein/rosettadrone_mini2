@@ -2035,7 +2035,7 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
         //    Log.i(TAG, "do_set_motion_velocity");
 
         mFlightController.setRollPitchControlMode(RollPitchControlMode.VELOCITY);
-        mFlightController.setYawControlMode(YawControlMode.ANGLE);
+        mFlightController.setYawControlMode(YawControlMode.ANGULAR_VELOCITY);
         mFlightController.setVerticalControlMode(VerticalControlMode.VELOCITY);
         
         // If we use yaw rate...
