@@ -680,14 +680,24 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
 
                 if(row.startsWith(";"))
                     continue;
-
+                
+                // TODO: check isNumeric / if a header is present
                 String[] columns = row.split(",", 0);
                 //;latitude,longitude,altitude(m),heading(deg),curvesize(m),rotationdir,gimbalmode,gimbalpitchangle,actiontype1,actionparam1,actiontype2,actionparam2,actiontype3,actionparam3,actiontype4,actionparam4,actiontype5,actionparam5,actiontype6,actionparam6,actiontype7,actionparam7,actiontype8,actionparam8,actiontype9,actionparam9,actiontype10,actionparam10,actiontype11,actionparam11,actiontype12,actionparam12,actiontype13,actionparam13,actiontype14,actionparam14,actiontype15,actionparam15,altitudemode,speed(m/s),poi_latitude,poi_longitude,poi_altitude(m),poi_altitudemode,photo_timeinterval,photo_distinterval
                 String strGimbalPitch = columns[7];
+                String strActionType1 = columns[8];
                 float gimbalPitch = Float.parseFloat(strGimbalPitch);
+                // TODO: Iterate actionType 1-15
+                int actionType1 = Integer.parseInt(strActionType1);
 
                 // Absolute pitch
                 mModel.do_set_Gimbal(9, gimbalPitch);
+
+                String strPOILatitude = columns[40];
+                String strPOILongitude = columns[41];
+                // Disabled is 0 / 0
+                double poiLatitude = Double.parseDouble(strPOILatitude);
+                double poiLongitude = Double.parseDouble(strPOILongitude);
 
                 String strLatitude = columns[0];
                 String strLongitude = columns[1];
@@ -700,7 +710,40 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                 String strHeading = columns[3];
                 float heading = Float.parseFloat(strHeading);
 
-                mModel.do_set_motion_absolute(latitude, longitude, altitude, heading, 2.5f, 2.5f, 2.5f, 2.5f, 0);
+                String strCurveSize = columns[4];
+                double curveSize = Double.parseDouble(strCurveSize);
+
+                // Min dist to target
+                // Useful for fly-by
+                mModel.m_Curvesize = Math.max(curveSize, 0.5);
+
+                switch(actionType1)
+                {
+                    // Take Photo
+                    case 1:
+                        mModel.gotoNoPhoto = false;
+                        break;
+                    // Start Recording
+                    case 2:
+                        mModel.gotoNoPhoto = true;
+                        mModel.startRecordingVideo();
+                        break;
+                    // Stop Recording
+                    case 3:
+                        mModel.gotoNoPhoto = true;
+                        mModel.stopRecordingVideo();
+                        break;
+                    default:
+                        mModel.gotoNoPhoto = true;
+                        break;
+                }
+                
+                mModel.m_POI_Lat = poiLatitude;
+                mModel.m_POI_Lon = poiLongitude;
+
+                Log.e(TAG, "Waypoints: m_POI_Lon: " + poiLongitude + " m_POI_Lat: " + poiLatitude);
+
+                mModel.do_set_motion_absolute(latitude, longitude, altitude, heading <= 180 ? heading : -180 + ((heading) - 180), 2.5f, 2.5f, 2.5f, 2.5f, 0);
                 while(mModel.mMoveToDataTimer != null ||  mModel.photoTaken != true)
                 {
                     ;
@@ -811,12 +854,12 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
                     });
                 }
 
-                mCamera.setVideoResolutionAndFrameRate(new ResolutionAndFrameRate(SettingsDefinitions.VideoResolution.RESOLUTION_1280x720,SettingsDefinitions.VideoFrameRate.FRAME_RATE_60_FPS) , djiError -> {
+                /*mCamera.setVideoResolutionAndFrameRate(new ResolutionAndFrameRate(SettingsDefinitions.VideoResolution.RESOLUTION_1280x720,SettingsDefinitions.VideoFrameRate.FRAME_RATE_60_FPS) , djiError -> {
                     if (djiError != null) {
                         Log.e(TAG, "can't change mode of camera, error: "+djiError);
                         logMessageDJI("can't change mode of camera, error: "+djiError);
                     }
-                });
+                });*/
 
                 //When calibration is needed or the fetch key frame is required by SDK, should use the provideTranscodedVideoFeed
                 //to receive the transcoded video feed from main camera.
