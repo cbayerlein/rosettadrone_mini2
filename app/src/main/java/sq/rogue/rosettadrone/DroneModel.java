@@ -187,8 +187,15 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
     private float m_ServoPos_pitch = 0;
     private float m_ServoPos_yaw = 0;
     public boolean photoTaken = false;
+    public boolean gotoNoPhoto = false;
+    public double m_Curvesize = 0.0;
+    public double m_POI_Lat = 0;
+    public double m_POI_Lon = 0;
+    public AtomicBoolean gimbalReady = null;
     private MiniPID miniPIDSide;
     private MiniPID miniPIDFwd;
+    private MiniPID miniPIDAlti;
+    private MiniPID miniPIDHeading;
 
     private boolean mSafetyEnabled = true;
     private boolean mMotorsArmed = false;
@@ -229,9 +236,14 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
     private void initFlightController(boolean sim) {
         parent.logMessageDJI("Starting FlightController...");
 
+        // Default to true to avoid issues with set gimbal never called before taking a pic
+        gimbalReady = new AtomicBoolean(true);
+
         // PID for position control...
         miniPIDSide = new MiniPID(0.35, 0.00008, 4.0);
         miniPIDFwd = new MiniPID(0.35, 0.00008, 4.0);
+        miniPIDAlti = new MiniPID(0.35, 0.00008, 4.0);
+        miniPIDHeading = new MiniPID(1.0, 0.0, 0.0);
 
         //miniPIDSide.setOutputRampRate(0.3);
         //miniPIDFwd.setOutputRampRate(0.3);
@@ -823,6 +835,11 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
         msg_autopilot_version msg = new msg_autopilot_version();
         msg.capabilities = MAV_PROTOCOL_CAPABILITY.MAV_PROTOCOL_CAPABILITY_COMMAND_INT;
         msg.capabilities |= MAV_PROTOCOL_CAPABILITY.MAV_PROTOCOL_CAPABILITY_MISSION_INT;
+        msg.os_sw_version = 0x040107;
+        msg.middleware_sw_version = 0x040107;
+        msg.flight_sw_version = 0x040107;
+        msg.compid = 0;
+
         sendMessage(msg);
     }
 
@@ -990,7 +1007,7 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
     private void send_altitude() {
         msg_altitude msg = new msg_altitude();
         LocationCoordinate3D coord = djiAircraft.getFlightController().getState().getAircraftLocation();
-        msg.altitude_relative = (float) (coord.getAltitude());
+        msg.altitude_relative = coord.getAltitude();
         m_alt = msg.altitude_relative;
         sendMessage(msg);
     }
@@ -1779,7 +1796,7 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
      ********************************************/
 
     void do_set_Gimbal(float channel, float value) {
-        Rotation.Builder builder = new Rotation.Builder().mode(RotationMode.ABSOLUTE_ANGLE).time(2);
+        Rotation.Builder builder = new Rotation.Builder().mode(RotationMode.ABSOLUTE_ANGLE).time(2.0);
         float param = value;
         if ((int) channel == 9) {
             m_ServoPos_pitch = param;
@@ -1800,7 +1817,7 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
 
         m_ServoSet = builder.build();
 
-        AtomicBoolean gimbalReady = new AtomicBoolean(false);
+        gimbalReady.set(false);
         mGimbal.rotate(m_ServoSet, djiError -> {
             if (djiError != null)
                 parent.logMessageDJI("Error: " + djiError.toString());
@@ -1810,9 +1827,6 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
 
             gimbalReady.set(true);
         });
-
-        while(!gimbalReady.get())
-            ; // Block Thread
     }
 
     // --------------------------------------------------------------------------------
@@ -1847,8 +1861,10 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
 
     // --------------------------------------------------------------------------------
     public void goto_position(double Lat, double Lon, float alt, float head) {
-        TimeLine.TimeLineGoTo(Lat, Lon, alt, (float) 2.0, head);
-        TimeLine.startTimeline();
+        //TimeLine.TimeLineGoTo(Lat, Lon, alt, (float) 2.0, head);
+        //TimeLine.startTimeline();
+        gotoNoPhoto = true;
+        do_set_motion_absolute(Lat, Lon, alt, head, 2.5f, 2.5f, 2.5f, 2.5f, 0);
     }
 
     // We want to move to a lat,lon,alt position, this has no support by DJI...
@@ -1894,6 +1910,8 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
 
             miniPIDFwd.reset();
             miniPIDSide.reset();
+            miniPIDAlti.reset();
+            miniPIDHeading.reset();
 
             // This is a non standard trick, but we would like to know exactly when we have reached the position...
             // So we move to AUTO mode while flying to position, and then go back to GUIDED...
@@ -1926,11 +1944,17 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
             double yaw = coord.getAttitude().yaw;
             if (yaw < 0) yaw = yaw + 360.0;
 
+            double brngPoi = m_Destination_Yaw;
+            if(m_POI_Lon != 0.0 && m_POI_Lat != 0.0)
+            {
+                brngPoi = getBearingBetweenWaypoints(m_POI_Lat, m_POI_Lon, local_lat, local_lon);
+            }
+
             // If yaw is masked then do not change yaw...
             double yawerror;
             if ((m_Destination_Mask & 0b0000010000000000) > 0) yawerror = 0;
                 // Make the error +-180 deg. error  + is we need to turn more right...mAutonomy
-            else yawerror = rotation(m_Destination_Yaw, yaw);
+            else yawerror = rotation(brngPoi, yaw);
             
             //yawerror = 0;
 
@@ -1938,9 +1962,9 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
             if ((m_Destination_Mask & 0b0000000000111111) == 0x3F) dist = 0;
 
             // If we are there...
-            if ((dist < 0.5 && Math.abs(yawerror) < 2.0) || mAutonomy == false) {
-                // If we got 3 consecutive hits at the right spot....
-                if (++detection > 7 || mAutonomy == false) {
+            if (((m_Curvesize > 0.0 ? dist < m_Curvesize : dist < 0.5) && Math.abs(yawerror) < 1.0) || mAutonomy == false) {
+                // If we got 5 consecutive hits at the right spot....
+                if (++detection > 5 || mAutonomy == false) {
                     mMoveToDataTimer.cancel();
                     mMoveToDataTimer.purge();
                     do_set_motion_velocity(0, 0, 0, 0, 0b1111011111000111);
@@ -1949,7 +1973,14 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
 //                    setGCSCommandedMode(ArduCopterFlightModes.GUIDED);
                     send_command_ack(m_lastCommand, MAV_RESULT.MAV_RESULT_ACCEPTED);
                     // Take Photo
-                    takePhoto();
+                    // Hack
+                    if(!gotoNoPhoto)
+                    {
+                        takePhoto();
+                    } else {
+                        gotoNoPhoto = false;
+                        photoTaken = true;
+                    }
                     mMoveToDataTimer = null;
 
                     return;
@@ -1982,23 +2013,21 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
             double fw_dist = hypotenuse; //Math.max(hypotenuse,20); // Math.cos(Math.toRadians(direction)) * hypotenuse + Math.sin(Math.toRadians(direction)) * bearing_error;
             Log.i(TAG, "direction: " + direction);
 
-            //------------------------------------------------
-            // Make a very simple P controller...
-            final double motion_p = 5.0;
-            final double maxspeed = 4.0;  // Default speed ( should be set ...)
-            double speed = maxspeed;
-            miniPIDFwd.setOutputLimits(-12.0f, 12.0f);
+            miniPIDFwd.setOutputLimits(-12.0f, 12.0f); // m/s
+            miniPIDFwd.setOutputFilter(0.1);
             double fwmotion = miniPIDFwd.getOutput(-fw_dist, 0);
-            miniPIDSide.setOutputLimits(-12.0f, 12.0f);
-            double rightmotion = miniPIDSide.getOutput(-right_dist, 0);
-            double upmotion = (m_Destination_Alt - coord.getAircraftLocation().getAltitude()) * motion_p;
-            if (upmotion > speed) upmotion = speed;
-            if (upmotion < -speed) upmotion = -speed;
 
-            speed = 100.0f;
-            double clockmotion = m_Destination_Yaw;
-            //if (clockmotion > speed) clockmotion = speed;
-            //if (clockmotion < -speed) clockmotion = -speed;
+            miniPIDSide.setOutputLimits(-12.0f, 12.0f); // m/s
+            miniPIDSide.setOutputFilter(0.1);
+            double rightmotion = miniPIDSide.getOutput(-right_dist, 0);
+
+            miniPIDAlti.setOutputLimits(-4.0f, 4.0f); // m/s
+            miniPIDAlti.setOutputFilter(0.1);
+            double upmotion = miniPIDAlti.getOutput(coord.getAircraftLocation().getAltitude(), m_Destination_Alt);
+
+            miniPIDHeading.setOutputLimits(-100.0f, 100.0f); // °/s
+            miniPIDAlti.setOutputFilter(0.1);
+            double clockmotion = miniPIDHeading.getOutput(-yawerror, 0);
 
             //------------------------------------------------
             if ((m_Destination_Mask & 0b0000000000111111) == 0x3F) {
@@ -2198,6 +2227,15 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
     private int pictureNum = 0;
 
     void takePhoto() {
+        // Wait till Gimbal is in Place
+        while(!gimbalReady.get())
+            ; // Block Thread
+
+        djiAircraft.getCamera().setMode(SettingsDefinitions.CameraMode.SHOOT_PHOTO, djiError -> {
+            if(djiError != null) {
+                parent.logMessageDJI("Error Setting PhotoMode: " + djiError.toString());
+            }
+        });
 
         SettingsDefinitions.ShootPhotoMode photoMode = SettingsDefinitions.ShootPhotoMode.SINGLE;
         photoTaken = false;
@@ -2405,13 +2443,20 @@ public class DroneModel implements CommonCallbacks.CompletionCallback {
      ********************************************/
 
     void startRecordingVideo() {
-        djiAircraft.getCamera().startRecordVideo(djiError -> {
-            if (djiError == null) {
-                parent.logMessageDJI("Started recording video");
-                send_command_ack(MAV_CMD_VIDEO_START_CAPTURE, MAV_RESULT.MAV_RESULT_ACCEPTED);
-            } else {
-                parent.logMessageDJI("Error starting video recording: " + djiError.toString());
+        djiAircraft.getCamera().setMode(SettingsDefinitions.CameraMode.RECORD_VIDEO, djiError -> {
+            if (djiError != null) {
+                parent.logMessageDJI("Error Setting RecordVideo Mode: " + djiError.toString());
                 send_command_ack(MAV_CMD_VIDEO_START_CAPTURE, MAV_RESULT.MAV_RESULT_FAILED);
+            } else {
+                djiAircraft.getCamera().startRecordVideo(djiError2 -> {
+                    if (djiError2 == null) {
+                        parent.logMessageDJI("Started recording video");
+                        send_command_ack(MAV_CMD_VIDEO_START_CAPTURE, MAV_RESULT.MAV_RESULT_ACCEPTED);
+                    } else {
+                        parent.logMessageDJI("Error starting video recording: " + djiError2.toString());
+                        send_command_ack(MAV_CMD_VIDEO_START_CAPTURE, MAV_RESULT.MAV_RESULT_FAILED);
+                    }
+                });
             }
         });
     }
