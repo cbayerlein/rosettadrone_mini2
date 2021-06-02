@@ -290,8 +290,8 @@ public class MAVLinkReceiver {
                 msg_manual_control msg_param_5 = (msg_manual_control) msg;
 
                 mModel.do_set_motion_velocity(
-                        msg_param_5.x / (float) 300.0,
-                        msg_param_5.y / (float) 1000.0,
+                        msg_param_5.x / (float) 1000.0,
+                        msg_param_5.y / (float) 300.0,
                         (msg_param_5.z - 500) / (float) 500.0,
                         msg_param_5.r / (float) 50.0,
                         0b0000011111000111);
